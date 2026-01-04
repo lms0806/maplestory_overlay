@@ -146,29 +146,70 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
 
                 let mut ps = PAINTSTRUCT::default();
                 let hdc = BeginPaint(hwnd, &mut ps);
-                let mut rect = RECT::default();
-                let _ = GetClientRect(hwnd, &mut rect);
+                    let mut rect = RECT::default();
+                    let _ = GetClientRect(hwnd, &mut rect);
+                    let width = rect.right - rect.left;
+                    let height = rect.bottom - rect.top;
 
-                let hbr = CreateSolidBrush(rgb(0, 0, 0));
-                let _ = FillRect(hdc, &rect, hbr);
-                let _ = DeleteObject(hbr);
+                    // 더블 버퍼링을 위한 메모리 DC 생성
+                    let mem_dc = CreateCompatibleDC(hdc);
+                    let mem_bitmap = CreateCompatibleBitmap(hdc, width, height);
+                    let old_bitmap = SelectObject(mem_dc, mem_bitmap);
 
-                let _ = SetBkMode(hdc, TRANSPARENT);
-                let _ = SetTextColor(hdc, rgb(255, 0, 0));
+                    // 배경 초기화 (검정색 - 투명 처리됨)
+                    let hbr = CreateSolidBrush(rgb(0, 0, 0));
+                    let _ = FillRect(mem_dc, &rect, hbr);
+                    let _ = DeleteObject(hbr);
 
-                rect.top = (rect.bottom - rect.top) / 20; 
+                    // 폰트 설정
+                    let hfont = CreateFontW(
+                        20, 0, 0, 0, FW_BOLD.0 as i32, 0, 0, 0,
+                        DEFAULT_CHARSET.0 as u32, OUT_DEFAULT_PRECIS.0 as u32,
+                        CLIP_DEFAULT_PRECIS.0 as u32, CLEARTYPE_QUALITY.0 as u32,
+                        DEFAULT_PITCH.0 as u32, w!("맑은 고딕")
+                    );
+                    let old_font = SelectObject(mem_dc, hfont);
+                    let _ = SetBkMode(mem_dc, TRANSPARENT);
 
-                let display_text = format!(
-                    "Maple Overlay ON (Ctrl + F1)\nNickname: {}\nResolution: {}x{}",
-                    if state.nickname.is_empty() { "None (Press Ctrl+F2)" } else { &state.nickname },
-                    rect.right - rect.left, rect.bottom - rect.top
-                );
-                let mut text: Vec<u16> = display_text.encode_utf16().collect();
-                let _ = DrawTextW(hdc, &mut text, &mut rect, DT_CENTER);
+                    let display_text = format!(
+                        "Maple Overlay ON (Ctrl + F1)\nNickname: {}\nResolution: {}x{}",
+                        if state.nickname.is_empty() { "None (Press Ctrl+F2)" } else { &state.nickname },
+                        width, height
+                    );
+                    let mut text: Vec<u16> = display_text.encode_utf16().collect();
 
-                let _ = EndPaint(hwnd, &ps);
-                LRESULT(0)
-            }
+                    let mut text_rect = rect;
+                    text_rect.top = height / 20;
+
+                    // 흰색 테두리 그리기
+                    let _ = SetTextColor(mem_dc, rgb(255, 255, 255));
+                    for dx in &[-1, 0, 1] {
+                        for dy in &[-1, 0, 1] {
+                            if *dx == 0 && *dy == 0 { continue; }
+                            let mut temp_rect = text_rect;
+                            temp_rect.left += dx; temp_rect.right += dx;
+                            temp_rect.top += dy; temp_rect.bottom += dy;
+                            let _ = DrawTextW(mem_dc, &mut text, &mut temp_rect, DT_CENTER);
+                        }
+                    }
+
+                    // 검정색 메인 글자 그리기
+                    let _ = SetTextColor(mem_dc, rgb(1, 1, 1));
+                    let _ = DrawTextW(mem_dc, &mut text, &mut text_rect, DT_CENTER);
+
+                    // 메모리 DC의 내용을 실제 화면 DC로 한 번에 복사
+                    let _ = BitBlt(hdc, 0, 0, width, height, mem_dc, 0, 0, SRCCOPY);
+
+                    // 리소스 해제
+                    SelectObject(mem_dc, old_font);
+                    let _ = DeleteObject(hfont);
+                    SelectObject(mem_dc, old_bitmap);
+                    let _ = DeleteObject(mem_bitmap);
+                    let _ = DeleteDC(mem_dc);
+
+                    let _ = EndPaint(hwnd, &ps);
+                    LRESULT(0)
+                }
             WM_DESTROY => {
                 APP_STATE.lock().unwrap().running = false;
                 PostQuitMessage(0);
