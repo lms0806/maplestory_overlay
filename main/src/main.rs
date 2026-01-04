@@ -51,11 +51,40 @@ extern "system" fn wnd_proc(
                 let mut ps = PAINTSTRUCT::default();
                 let hdc = BeginPaint(hwnd, &mut ps);
 
+                // 1. 전체 영역 확보
+                let mut rect = RECT::default();
+                let _ = GetClientRect(hwnd, &mut rect);
+
+                // 2. 배경 지우기
+                let hbr = CreateSolidBrush(rgb(0, 0, 0));
+                let _ = FillRect(hdc, &rect, hbr);
+                let _ = DeleteObject(hbr);
+
+                // 3. 텍스트 설정
                 let _ = SetBkMode(hdc, TRANSPARENT);
                 let _ = SetTextColor(hdc, rgb(255, 0, 0));
 
-                let text: Vec<u16> = "Maple Overlay ON (Ctrl + F1)".encode_utf16().collect();
-                let _ = TextOutW(hdc, 20, 20, &text);
+                let width = rect.right - rect.left;
+                let height = rect.bottom - rect.top;
+
+                // 해상도의 5% 지점을 상단 시작점으로 설정 (비율에 따라 자동 조절)
+                rect.top = height / 20; 
+
+                let display_text = format!(
+                    "Maple Overlay ON (Ctrl + F1)\nResolution: {}x{}",
+                    width, height
+                );
+                let mut text: Vec<u16> = display_text.encode_utf16().collect();
+
+                // 4. 중앙 상단 정렬하여 그리기
+                // DT_CENTER: 가로 중앙
+                // DT_VCENTER를 제거하여 상단에 고정하고, \n(줄바꿈) 인식을 위해 DT_SINGLELINE도 제거합니다.
+                let _ = DrawTextW(
+                    hdc,
+                    &mut text,
+                    &mut rect,
+                    DT_CENTER,
+                );
 
                 let _ = EndPaint(hwnd, &ps);
                 LRESULT(0)
@@ -239,6 +268,7 @@ fn main() -> Result<()> {
                             rect.bottom - rect.top,
                             true,
                         );
+                        // InvalidateRect의 세 번째 인자를 true로 설정하여 배경을 다시 그리도록 강제합니다.
                         let _ = InvalidateRect(overlay_hwnd, None, BOOL::from(true));
                     } else {
                         // 창이 최소화되었거나 숨겨졌으면 오버레이도 숨김
