@@ -1,3 +1,5 @@
+use reqwest::{Client, header};
+use serde::{Deserialize, Serialize};
 use lazy_static::lazy_static;
 use std::sync::Mutex;
 use windows::{
@@ -24,10 +26,11 @@ struct AppState {
     running: bool,
     overlay_enabled: bool,
     nickname: String,
-    api_key: String,      // API 키 필드 추가
+    api_key: String,
+    ocid: String,         // OCID 필드 추가
     input_hwnd: HWND,
     edit_hwnd: HWND,
-    api_edit_hwnd: HWND,  // API 키 입력용 핸들 추가
+    api_edit_hwnd: HWND,
 }
 
 impl Default for AppState {
@@ -37,6 +40,7 @@ impl Default for AppState {
             overlay_enabled: true,
             nickname: String::new(),
             api_key: String::new(),
+            ocid: String::new(), // 초기화
             input_hwnd: HWND(0),
             edit_hwnd: HWND(0),
             api_edit_hwnd: HWND(0),
@@ -61,20 +65,36 @@ extern "system" fn input_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 if (wparam.0 & 0xffff) as isize == ID_BUTTON_OK {
                     let mut state = APP_STATE.lock().unwrap();
                     
-                    // 닉네임 읽기
-                    let mut nick_buffer = [0u16; 64];
-                    let nick_len = GetWindowTextW(state.edit_hwnd, &mut nick_buffer);
-                    state.nickname = String::from_utf16_lossy(&nick_buffer[..nick_len as usize]).trim().to_string();
+                        // 닉네임 읽기
+                        let mut nick_buffer = [0u16; 64];
+                        let nick_len = GetWindowTextW(state.edit_hwnd, &mut nick_buffer);
+                        let nickname = String::from_utf16_lossy(&nick_buffer[..nick_len as usize]).trim().to_string();
+                        state.nickname = nickname.clone();
 
-                    // API 키 읽기
-                    let mut api_buffer = [0u16; 128];
-                    let api_len = GetWindowTextW(state.api_edit_hwnd, &mut api_buffer);
-                    state.api_key = String::from_utf16_lossy(&api_buffer[..api_len as usize]).trim().to_string();
+                        // API 키 읽기
+                        let mut api_buffer = [0u16; 128];
+                        let api_len = GetWindowTextW(state.api_edit_hwnd, &mut api_buffer);
+                        let api_key = String::from_utf16_lossy(&api_buffer[..api_len as usize]).trim().to_string();
+                        state.api_key = api_key.clone();
 
-                    let _ = ShowWindow(hwnd, SW_HIDE);
+                        // OCID가 비어있다면 API 호출
+                        if !state.nickname.is_empty() && !state.api_key.is_empty() {
+                            // 비동기 처리를 위해 스레드 생성 (간단한 예시)
+                            std::thread::spawn(move || {
+                                let rt = tokio::runtime::Runtime::new().unwrap();
+                                rt.block_on(async {
+                                    if let Ok(new_ocid) = get_ocid(&api_key, &nickname).await {
+                                        let mut state = APP_STATE.lock().unwrap();
+                                        state.ocid = new_ocid;
+                                    }
+                                });
+                            });
+                        }
+
+                        let _ = ShowWindow(hwnd, SW_HIDE);
+                    }
+                    LRESULT(0)
                 }
-                LRESULT(0)
-            }
             WM_CLOSE => {
                 let _ = ShowWindow(hwnd, SW_HIDE);
                 LRESULT(0)
@@ -235,9 +255,10 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                 let _ = SetBkMode(mem_dc, TRANSPARENT);
 
                 let display_text = format!(
-                    "Maple Overlay ON (Ctrl + F1)\nNickname: {}\nAPI Key: {}\nResolution: {}x{}",
+                    "Maple Overlay ON (Ctrl + F1)\nNickname: {}\nOCID: {}\nAPI Key: {}\nResolution: {}x{}",
                     if state.nickname.is_empty() { "None" } else { &state.nickname },
-                    if state.api_key.is_empty() { "None" } else { "********" }, // 보안상 가림
+                    if state.ocid.is_empty() { "Fetching..." } else { &state.ocid },
+                    if state.api_key.is_empty() { "None" } else { "********" },
                     width,
                     height
                 );
@@ -287,6 +308,51 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
     }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UserOcid {
+    pub ocid: String,
+}
+
+/// 넥슨 Open API를 통해 캐릭터의 OCID를 가져옵니다.
+async fn get_ocid(api_key: &str, nickname: &str) -> Result<String> {
+    let url = format!(
+        "https://open.api.nexon.com/maplestory/v1/id?character_name={}",
+        nickname
+    );
+
+    let mut headers = header::HeaderMap::new();
+    headers.insert("x-nxopen-api-key", api_key.parse().unwrap());
+
+    let response = Client::new()
+        .get(url)
+        .headers(headers)
+        .send()
+        .await
+        .expect("Failed to send request");
+
+    if response.status().is_success() {
+        // response.json()은 결과 데이터를 serde_json::Value로 바로 변환해줍니다.
+        let json: serde_json::Value = response.json().await.map_err(|_| Error::from_win32())?;
+
+        // "ocid" 필드 값을 찾아서 String으로 변환합니다.
+        let ocid = json["ocid"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+
+        Ok(ocid) // Json()으로 감싸지 않고 바로 Ok()에 담아 반환합니다.
+    } else {
+        Ok(String::from("Error or Not Found"))
+    }
+
+    // if response.status().is_success() {
+    //     let json: serde_json::Value = response.json().map_err(|_| Error::from_win32())?;
+    //     Ok(json["ocid"].as_str().unwrap_or("").to_string())
+    // } else {
+    //     Ok(String::from("Error or Not Found"))
+    // }
 }
 
 // ... find_maplestory_window 및 enum_windows_proc 로직은 동일 (생략 가능하나 유지됨) ...
