@@ -24,8 +24,10 @@ struct AppState {
     running: bool,
     overlay_enabled: bool,
     nickname: String,
+    api_key: String,      // API 키 필드 추가
     input_hwnd: HWND,
     edit_hwnd: HWND,
+    api_edit_hwnd: HWND,  // API 키 입력용 핸들 추가
 }
 
 impl Default for AppState {
@@ -34,8 +36,10 @@ impl Default for AppState {
             running: true,
             overlay_enabled: true,
             nickname: String::new(),
+            api_key: String::new(),
             input_hwnd: HWND(0),
             edit_hwnd: HWND(0),
+            api_edit_hwnd: HWND(0),
         }
     }
 }
@@ -48,7 +52,7 @@ fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
 }
 
 // ===============================
-// input window (닉네임 입력 창)
+// input window (입력 창)
 // ===============================
 extern "system" fn input_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
@@ -56,11 +60,17 @@ extern "system" fn input_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             WM_COMMAND => {
                 if (wparam.0 & 0xffff) as isize == ID_BUTTON_OK {
                     let mut state = APP_STATE.lock().unwrap();
-                    let mut buffer = [0u16; 64];
-                    let len = GetWindowTextW(state.edit_hwnd, &mut buffer);
-                    state.nickname = String::from_utf16_lossy(&buffer[..len as usize])
-                        .trim()
-                        .to_string();
+                    
+                    // 닉네임 읽기
+                    let mut nick_buffer = [0u16; 64];
+                    let nick_len = GetWindowTextW(state.edit_hwnd, &mut nick_buffer);
+                    state.nickname = String::from_utf16_lossy(&nick_buffer[..nick_len as usize]).trim().to_string();
+
+                    // API 키 읽기
+                    let mut api_buffer = [0u16; 128];
+                    let api_len = GetWindowTextW(state.api_edit_hwnd, &mut api_buffer);
+                    state.api_key = String::from_utf16_lossy(&api_buffer[..api_len as usize]).trim().to_string();
+
                     let _ = ShowWindow(hwnd, SW_HIDE);
                 }
                 LRESULT(0)
@@ -77,14 +87,12 @@ extern "system" fn input_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 unsafe fn ensure_input_box(hinstance: HINSTANCE) {
     let mut state = APP_STATE.lock().unwrap();
     if state.input_hwnd.0 != 0 {
-        unsafe {
-            let _ = ShowWindow(state.input_hwnd, SW_SHOW);
-            let _ = SetForegroundWindow(state.input_hwnd);
-        }
+        let _ = ShowWindow(state.input_hwnd, SW_SHOW);
+        let _ = SetForegroundWindow(state.input_hwnd);
         return;
     }
 
-    let class_name = w!("NicknameInputWindow");
+    let class_name = w!("SettingsInputWindow");
     let wc = WNDCLASSW {
         hInstance: hinstance,
         lpfnWndProc: Some(input_wnd_proc),
@@ -94,65 +102,65 @@ unsafe fn ensure_input_box(hinstance: HINSTANCE) {
         ..Default::default()
     };
 
-    unsafe {
-        RegisterClassW(&wc);
-    }
+    RegisterClassW(&wc);
 
-    unsafe {
-        state.input_hwnd = CreateWindowExW(
-            WS_EX_TOPMOST,
-            class_name,
-            w!("Enter Nickname"),
-            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            300,
-            150,
-            None,
-            None,
-            hinstance,
-            None,
-        );
-    }
+    state.input_hwnd = CreateWindowExW(
+        WS_EX_TOPMOST,
+        class_name,
+        w!("Settings"),
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        300,
+        220, // 높이를 조금 늘림
+        None,
+        None,
+        hinstance,
+        None,
+    );
 
-    unsafe {
-        state.edit_hwnd = CreateWindowExW(
-            WS_EX_CLIENTEDGE,
-            w!("EDIT"),
-            w!(""),
-            WS_CHILD | WS_VISIBLE | WS_BORDER | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
-            20,
-            20,
-            240,
-            25,
-            state.input_hwnd,
-            None,
-            hinstance,
-            None,
-        );
-    }
+    // 닉네임 라벨 및 입력창
+    CreateWindowExW(Default::default(), w!("STATIC"), w!("Nickname:"), WS_CHILD | WS_VISIBLE, 20, 15, 240, 20, state.input_hwnd, None, hinstance, None);
+    state.edit_hwnd = CreateWindowExW(
+        WS_EX_CLIENTEDGE,
+        w!("EDIT"),
+        w!(""),
+        WS_CHILD | WS_VISIBLE | WS_BORDER | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
+        20, 35, 240, 25,
+        state.input_hwnd,
+        None,
+        hinstance,
+        None,
+    );
 
-    unsafe {
-        let _ = CreateWindowExW(
-            Default::default(),
-            w!("BUTTON"),
-            w!("OK"),
-            WS_CHILD | WS_VISIBLE | WINDOW_STYLE(BS_PUSHBUTTON as u32),
-            100,
-            60,
-            80,
-            30,
-            state.input_hwnd,
-            HMENU(ID_BUTTON_OK),
-            hinstance,
-            None,
-        );
-    }
+    // API 키 라벨 및 입력창
+    CreateWindowExW(Default::default(), w!("STATIC"), w!("Open API Key:"), WS_CHILD | WS_VISIBLE, 20, 75, 240, 20, state.input_hwnd, None, hinstance, None);
+    state.api_edit_hwnd = CreateWindowExW(
+        WS_EX_CLIENTEDGE,
+        w!("EDIT"),
+        w!(""),
+        WS_CHILD | WS_VISIBLE | WS_BORDER | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
+        20, 95, 240, 25,
+        state.input_hwnd,
+        None,
+        hinstance,
+        None,
+    );
 
-    unsafe {
-        let _ = ShowWindow(state.input_hwnd, SW_SHOW);
-        let _ = SetForegroundWindow(state.input_hwnd);
-    }
+    CreateWindowExW(
+        Default::default(),
+        w!("BUTTON"),
+        w!("OK"),
+        WS_CHILD | WS_VISIBLE | WINDOW_STYLE(BS_PUSHBUTTON as u32),
+        100, 140, 80, 30,
+        state.input_hwnd,
+        HMENU(ID_BUTTON_OK),
+        hinstance,
+        None,
+    );
+
+    let _ = ShowWindow(state.input_hwnd, SW_SHOW);
+    let _ = SetForegroundWindow(state.input_hwnd);
 }
 
 // ===============================
@@ -227,12 +235,9 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                 let _ = SetBkMode(mem_dc, TRANSPARENT);
 
                 let display_text = format!(
-                    "Maple Overlay ON (Ctrl + F1)\nNickname: {}\nResolution: {}x{}",
-                    if state.nickname.is_empty() {
-                        "None (Press Ctrl+F2)"
-                    } else {
-                        &state.nickname
-                    },
+                    "Maple Overlay ON (Ctrl + F1)\nNickname: {}\nAPI Key: {}\nResolution: {}x{}",
+                    if state.nickname.is_empty() { "None" } else { &state.nickname },
+                    if state.api_key.is_empty() { "None" } else { "********" }, // 보안상 가림
                     width,
                     height
                 );
