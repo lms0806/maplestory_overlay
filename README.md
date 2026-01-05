@@ -19,7 +19,7 @@ cargo build --release
 Ctrl + F1
 ```
 
-- 닉네임 입력
+- 닉네임, 오픈 API Key 입력
 ```aiignore
 Ctrl + F2
 ```
